@@ -32,7 +32,7 @@ def main():
 
     # hyperparameters
     epochs = 100
-    batch_size = 128
+    batch_size = 200
     learning_rate = 0.001
     init_lr = learning_rate
     lr_decay_rate = 0.05
