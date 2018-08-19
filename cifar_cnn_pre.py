@@ -75,7 +75,7 @@ def main():
             conv4 = tf.layers.batch_normalization(conv4)
             conv4 = tf.nn.relu(conv4)
             conv4 = tf.nn.max_pool(conv4, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
-            conv4 = tf.layers.dropout(conv4, rate=0.3, training=is_train)
+            conv4 = tf.layers.dropout(conv4, rate=0.5, training=is_train)
 
         with tf.name_scope("conv_layer_5"):
             conv5_filter = tf.get_variable(shape=[3, 3, 64, 128], name="conv5_filter", dtype=tf.float32)
@@ -149,12 +149,12 @@ def main():
 
         summary = tf.summary.merge_all()
         train_writer = tf.summary.FileWriter(summary_path + "train", sess.graph)
+        valid_writer = tf.summary.FileWriter(summary_path + "valid")
         test_writer = tf.summary.FileWriter(summary_path + 'test')
 
         print('Training...')
         sess.run(tf.global_variables_initializer())
         # training
-        test_acc = []
         cur_step = 0
         for epoch in range(epochs):
             for batch_i in range(1, 5 + 1):  # since CIFAR has 5 train batches dataset
@@ -167,25 +167,17 @@ def main():
                     if cur_step % 20 == 0:
                         summ1 = sess.run(summary, feed_dict={x: valid_features, y: valid_labels, is_train: False,
                                                              lr: None})
-                        test_writer.add_summary(summ1, cur_step)
+                        valid_writer.add_summary(summ1, cur_step)
                     if cur_step % 100 == 0:
-                        acc = sess.run(accuracy, feed_dict={x: test_features, y: test_labels, is_train: True, lr: None})
-                        test_acc.append(acc)
+                        acc, summ2 = sess.run([accuracy, summary], feed_dict={x: test_features, y: test_labels,
+                                                                              is_train: False, lr: None})
+                        test_writer.add_summary(summ2, cur_step)
                         print("Step {}, test acc: {}".format(cur_step, acc))
             learning_rate = init_lr / (1 + epoch * lr_decay_rate)
 
         train_writer.close()
+        valid_writer.close()
         test_writer.close()
-
-        print(test_acc)
-        x = np.arange(1, len(test_acc) + 1, 1)
-        plt.figure(figsize=(14, 7))
-        plt.plot(x, test_acc, c='r', ls='-')
-        plt.xlim(0, len(test_acc) + 1)
-        plt.ylim(0.0, 1.0)
-        plt.legend(['Accuracy on Test Dataset'])
-        plt.grid()
-        plt.show()
 
 
 if __name__ == "__main__":
