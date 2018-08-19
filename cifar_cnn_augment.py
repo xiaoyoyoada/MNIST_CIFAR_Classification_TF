@@ -1,0 +1,259 @@
+import os
+import numpy as np
+import tensorflow as tf
+from keras.datasets import cifar10
+from sklearn import utils
+from sklearn.model_selection import train_test_split
+from keras.utils.np_utils import to_categorical
+from keras.preprocessing.image import ImageDataGenerator
+from cifar_data import batch_features_labels
+
+
+def variable_summaries(var, name):
+    """Attach a lot of summaries to a Tensor (for TensorBoard visualization)."""
+    with tf.name_scope(name):
+        mean = tf.reduce_mean(var)
+        tf.summary.scalar('mean', mean)
+        with tf.name_scope('stddev'):
+            stddev = tf.sqrt(tf.reduce_mean(tf.square(var - mean)))
+        tf.summary.scalar('stddev', stddev)
+        tf.summary.scalar('max', tf.reduce_max(var))
+        tf.summary.scalar('min', tf.reduce_min(var))
+        tf.summary.histogram('histogram', var)
+
+
+def main():
+
+    summary_path = "./summary/summary_cifar_aug/"
+    if not os.path.exists(summary_path):
+        os.makedirs(summary_path)
+
+    # prepare dataset
+    print("load dataset...")
+    (x_train, y_train), (x_test, y_test) = cifar10.load_data()
+
+    x_train = x_train.reshape(x_train.shape[0], 32, 32, 3).astype(np.float32) / 255.0
+    y_train = to_categorical(y_train, num_classes=10)
+
+    x_train, x_valid, y_train, y_valid = train_test_split(x_train, y_train, test_size=0.1, random_state=12345)
+
+    x_test = x_test.reshape(x_test.shape[0], 32, 32, 3).astype(np.float32) / 255.0
+    y_test = to_categorical(y_test, num_classes=10)
+
+    print("dataset augmentation...")
+    image_generator = ImageDataGenerator(
+        featurewise_center=False,
+        samplewise_center=False,
+        featurewise_std_normalization=False,
+        samplewise_std_normalization=False,
+        zca_whitening=False,
+        zca_epsilon=1e-06,
+        rotation_range=15,
+        width_shift_range=0.1,
+        height_shift_range=0.1,
+        shear_range=0.0,
+        zoom_range=0.0,
+        channel_shift_range=0.0,
+        fill_mode='nearest',
+        cval=0.0,
+        horizontal_flip=True,
+        vertical_flip=False,
+        rescale=None,
+        preprocessing_function=None,
+        data_format="channels_last")
+
+    image_generator.fit(x_train, augment=False)
+    x_augmented = x_train.copy()
+    y_augmented = y_train.copy()
+    x_augmented = image_generator.flow(x_augmented, np.zeros(x_augmented.shape[0]), batch_size=x_augmented.shape[0],
+                                       shuffle=False).next()[0]
+
+    x_train = np.concatenate((x_train, x_augmented))
+    y_train = np.concatenate((y_train, y_augmented))
+
+    x_train, y_train = utils.shuffle(x_train, y_train, random_state=0)
+
+    # hyperparameters
+    epochs = 100
+    batch_size = 200
+    learning_rate = 0.001
+    init_lr = learning_rate
+    lr_decay_rate = 0.03
+    grad_clip = 5.0
+    l2_norm_rate = 0.001
+
+    with tf.Graph().as_default(), tf.Session() as sess:
+        print("build model...")
+        with tf.name_scope('input'):
+            x = tf.placeholder(tf.float32, shape=(None, 32, 32, 3), name='input_x')
+            y = tf.placeholder(tf.float32, shape=(None, 10), name='output_y')
+            lr = tf.placeholder(tf.float32, name='learning_rate')
+            is_train = tf.placeholder(tf.bool, shape=[], name="is_train")
+
+        with tf.name_scope('input_reshape'):
+            image_shaped_input = x
+            tf.summary.image('input', image_shaped_input, 10)
+
+        with tf.name_scope('conv_layer_1'):
+            conv1_filter = tf.get_variable(shape=[3, 3, 3, 32], name="conv1_filter", dtype=tf.float32)
+            conv1 = tf.nn.conv2d(x, conv1_filter, strides=[1, 1, 1, 1], padding='SAME')
+            conv1 = tf.nn.elu(conv1)
+            conv1 = tf.layers.batch_normalization(conv1)
+            # l2 regularizer
+            weight_loss = tf.multiply(tf.nn.l2_loss(conv1_filter), l2_norm_rate)
+            tf.add_to_collection('weight_losses', weight_loss)
+
+        with tf.name_scope("conv_layer_2"):
+            conv2_filter = tf.get_variable(shape=[3, 3, 32, 32], name="conv2_filter", dtype=tf.float32)
+            conv2 = tf.nn.conv2d(conv1, conv2_filter, strides=[1, 1, 1, 1], padding='SAME')
+            conv2 = tf.nn.elu(conv2)
+            conv2 = tf.layers.batch_normalization(conv2)
+            conv2 = tf.nn.max_pool(conv2, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
+            conv2 = tf.layers.dropout(conv2, rate=0.2, training=is_train)
+            # l2 regularizer
+            weight_loss = tf.multiply(tf.nn.l2_loss(conv2_filter), l2_norm_rate)
+            tf.add_to_collection('weight_losses', weight_loss)
+
+        with tf.name_scope("conv_layer_3"):
+            conv3_filter = tf.get_variable(shape=[3, 3, 32, 64], name="conv3_filter", dtype=tf.float32)
+            conv3 = tf.nn.conv2d(conv2, conv3_filter, strides=[1, 1, 1, 1], padding='SAME')
+            conv3 = tf.nn.elu(conv3)
+            conv3 = tf.layers.batch_normalization(conv3)
+            # l2 regularizer
+            weight_loss = tf.multiply(tf.nn.l2_loss(conv3_filter), l2_norm_rate)
+            tf.add_to_collection('weight_losses', weight_loss)
+
+        with tf.name_scope("conv_layer_4"):
+            conv4_filter = tf.get_variable(shape=[3, 3, 64, 64], name="conv4_filter", dtype=tf.float32)
+            conv4 = tf.nn.conv2d(conv3, conv4_filter, strides=[1, 1, 1, 1], padding='SAME')
+            conv4 = tf.nn.elu(conv4)
+            conv4 = tf.layers.batch_normalization(conv4)
+            conv4 = tf.nn.max_pool(conv4, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
+            conv4 = tf.layers.dropout(conv4, rate=0.3, training=is_train)
+            # l2 regularizer
+            weight_loss = tf.multiply(tf.nn.l2_loss(conv4_filter), l2_norm_rate)
+            tf.add_to_collection('weight_losses', weight_loss)
+
+        with tf.name_scope("conv_layer_5"):
+            conv5_filter = tf.get_variable(shape=[3, 3, 64, 128], name="conv5_filter", dtype=tf.float32)
+            conv5 = tf.nn.conv2d(conv4, conv5_filter, strides=[1, 1, 1, 1], padding='SAME')
+            conv5 = tf.nn.elu(conv5)
+            conv5 = tf.layers.batch_normalization(conv5)
+            # l2 regularizer
+            weight_loss = tf.multiply(tf.nn.l2_loss(conv5_filter), l2_norm_rate)
+            tf.add_to_collection('weight_losses', weight_loss)
+
+        with tf.name_scope("conv_layer_6"):
+            conv6_filter = tf.get_variable(shape=[3, 3, 128, 128], name="conv6_filter", dtype=tf.float32)
+            conv6 = tf.nn.conv2d(conv5, conv6_filter, strides=[1, 1, 1, 1], padding='SAME')
+            conv6 = tf.nn.elu(conv6)
+            conv6 = tf.layers.batch_normalization(conv6)
+            conv6 = tf.nn.max_pool(conv6, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
+            conv6 = tf.layers.dropout(conv6, rate=0.4, training=is_train)
+            # l2 regularizer
+            weight_loss = tf.multiply(tf.nn.l2_loss(conv6_filter), l2_norm_rate)
+            tf.add_to_collection('weight_losses', weight_loss)
+
+        with tf.name_scope("conv_layer_7"):
+            conv7_filter = tf.get_variable(shape=[3, 3, 128, 256], name="conv7_filter", dtype=tf.float32)
+            conv7 = tf.nn.conv2d(conv6, conv7_filter, strides=[1, 1, 1, 1], padding='SAME')
+            conv7 = tf.nn.elu(conv7)
+            conv7 = tf.layers.batch_normalization(conv7)
+            # l2 regularizer
+            weight_loss = tf.multiply(tf.nn.l2_loss(conv7_filter), l2_norm_rate)
+            tf.add_to_collection('weight_losses', weight_loss)
+
+        with tf.name_scope("conv_layer_8"):
+            conv8_filter = tf.get_variable(shape=[3, 3, 256, 256], name="conv8_filter", dtype=tf.float32)
+            conv8 = tf.nn.conv2d(conv7, conv8_filter, strides=[1, 1, 1, 1], padding='SAME')
+            conv8 = tf.nn.elu(conv8)
+            conv8 = tf.layers.batch_normalization(conv8)
+            conv8 = tf.nn.max_pool(conv8, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
+            conv8 = tf.layers.dropout(conv8, rate=0.5, training=is_train)
+            # l2 regularizer
+            weight_loss = tf.multiply(tf.nn.l2_loss(conv8_filter), l2_norm_rate)
+            tf.add_to_collection('weight_losses', weight_loss)
+
+        with tf.name_scope("reshape_layer"):
+            flat = tf.contrib.layers.flatten(conv8)
+
+        with tf.name_scope("fc_layer_1"):
+            flat_shape = flat.get_shape().as_list()
+            weight = tf.get_variable(shape=[flat_shape[1], 512], name="fc1_weight", dtype=tf.float32)
+            variable_summaries(weight, name="output_weight")
+            bias = tf.get_variable(shape=[512], dtype=tf.float32, initializer=tf.constant_initializer(0.001),
+                                   name="fc1_bias")
+            variable_summaries(bias, name="output_bias")
+            fc1_pre = tf.matmul(flat, weight) + bias
+            tf.summary.histogram('before_relu', fc1_pre)
+            fc1 = tf.nn.relu(fc1_pre)
+            tf.summary.histogram('after_relu', fc1)
+            fc1 = tf.layers.batch_normalization(fc1)
+            fc1 = tf.layers.dropout(fc1, rate=0.0, training=is_train)
+            # l2 regularizer
+            weight_loss = tf.multiply(tf.nn.l2_loss(weight), l2_norm_rate)
+            tf.add_to_collection('weight_losses', weight_loss)
+
+        with tf.name_scope("fc_layer_2"):
+            weight1 = tf.get_variable(shape=[512, 10], name="fc2_weight", dtype=tf.float32)
+            bias1 = tf.get_variable(shape=[10], dtype=tf.float32, initializer=tf.constant_initializer(0.001),
+                                    name="fc2_bias")
+            logits = tf.matmul(fc1, weight1) + bias1
+            # l2 regularizer
+            weight_loss = tf.multiply(tf.nn.l2_loss(weight1), l2_norm_rate)
+            tf.add_to_collection('weight_losses', weight_loss)
+
+        # cost
+        with tf.name_scope("cost"):
+            cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=y))
+            weight_cost = tf.add_n(tf.get_collection('weight_losses'))
+            cost += weight_cost
+        tf.summary.scalar("loss", cost)
+
+        optimizer = tf.train.AdamOptimizer(learning_rate=lr)
+        if grad_clip is not None and grad_clip > 0.0:
+            grads, vs = zip(*optimizer.compute_gradients(cost))
+            grads, _ = tf.clip_by_global_norm(grads, grad_clip)
+            train_op = optimizer.apply_gradients(zip(grads, vs))
+        else:
+            train_op = optimizer.minimize(cost)
+
+        # accuracy
+        with tf.name_scope('accuracy'):
+            accuracy = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(logits, 1), tf.argmax(y, 1)), tf.float32),
+                                      name='accuracy')
+        tf.summary.scalar("accuracy", accuracy)
+
+        summary = tf.summary.merge_all()
+        train_writer = tf.summary.FileWriter(summary_path + "train", sess.graph)
+        valid_writer = tf.summary.FileWriter(summary_path + 'valid')
+        test_writer = tf.summary.FileWriter(summary_path + "test")
+
+        print('Training...')
+        sess.run(tf.global_variables_initializer())
+        # training
+        cur_step = 0
+        for epoch in range(epochs):
+            for batch_features, batch_labels in batch_features_labels(x_train, y_train, batch_size):
+                cur_step += 1
+                _, loss, summ = sess.run([train_op, cost, summary], feed_dict={x: batch_features, y: batch_labels,
+                                                                               is_train: True, lr: learning_rate})
+                train_writer.add_summary(summ, cur_step)
+                if cur_step % 20 == 0:
+                    summ1 = sess.run(summary, feed_dict={x: x_valid, y: y_valid, is_train: False, lr: None})
+                    valid_writer.add_summary(summ1, cur_step)
+                if cur_step % 100 == 0:
+                    acc, summ2 = sess.run([accuracy, summary], feed_dict={x: x_test, y: y_test, is_train: False,
+                                                                          lr: None})
+                    test_writer.add_summary(summ2, cur_step)
+                    print("Step {}, test acc: {}".format(cur_step, acc))
+            if epoch >= 25:
+                learning_rate = init_lr / (1 + epoch * lr_decay_rate)
+
+        train_writer.close()
+        valid_writer.close()
+        test_writer.close()
+
+
+if __name__ == "__main__":
+    main()
